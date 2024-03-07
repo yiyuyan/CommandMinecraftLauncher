@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.sun.istack.internal.Nullable;
 
 import java.io.*;
 import java.net.HttpURLConnection;
@@ -11,6 +12,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -104,7 +106,7 @@ public class Utils {
         return response.toString();
     }
 
-    public static void downloadFile(String fileUrl, String fileName) {
+    public static void downloadFile(String fileUrl, String fileName) throws IOException {
         if(!new File(fileName).exists()){
             System.out.println("Downloading: "+fileUrl);
             try (BufferedInputStream in = new BufferedInputStream(new URL(fileUrl).openStream());
@@ -114,8 +116,8 @@ public class Utils {
                 while ((bytesRead = in.read(dataBuffer, 0, 1024)) != -1) {
                     fileOutputStream.write(dataBuffer, 0, bytesRead);
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
             }
         }
     }
@@ -123,7 +125,13 @@ public class Utils {
     public static void downloadWithThreads(String fileUrl, String fileName) {
         ExecutorService executor = Executors.newFixedThreadPool(64);
         for (int i = 0; i < 64; i++) {
-            executor.execute(() -> downloadFile(fileUrl, fileName));
+            executor.execute(() -> {
+                try {
+                    downloadFile(fileUrl, fileName);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
         }
         executor.shutdown();
         try {
@@ -174,10 +182,11 @@ public class Utils {
         return new String(fileData, StandardCharsets.UTF_8);
     }
 
-    public static String getLibraries(JsonObject json,String vn) throws IOException {
+    public static String getLibraries(JsonObject json,String vn,@Nullable String jarFileStr) {
         String libs = "\"";
+        String fg = System.getProperty("os.name").contains("Windows")?";":":";
         mkd("CML/tmp/natives");
-        String jvm_args = json.get("arguments").getAsJsonObject().get("jvm").toString();
+        String jvm_args = json.get("arguments")!=null?json.get("arguments").getAsJsonObject().get("jvm").toString():"";
         for (Iterator<JsonElement> it = json.get("libraries").getAsJsonArray().iterator(); it.hasNext(); ) {
             JsonElement version = it.next();
             try {
@@ -194,27 +203,77 @@ public class Utils {
                             libs = libs + System.getProperty("user.dir").replace("\\","/")+"/.minecraft/libraries/"+path;
                         }
                         else{
-                            libs = libs + ";" +System.getProperty("user.dir").replace("\\","/")+"/.minecraft/libraries/"+path;
+                            libs = libs + fg +System.getProperty("user.dir").replace("\\","/")+"/.minecraft/libraries/"+path;
                         }
                     }
                     //}
                 }
             }
+
             catch (NullPointerException e){
                 //install fabric or other
                 String name = version.getAsJsonObject().get("name").getAsString();
                 String path = name.split(":")[0].replaceAll("\\.","/")+"/"+name.split(":")[1]+"/"+name.split(":")[2];
                 String fileName = name.split(":")[1]+"-"+name.split(":")[2]+".jar";
                 mkd(".minecraft/libraries/"+path);
-                downloadFile(version.getAsJsonObject().get("url").getAsString()+path+"/"+fileName,".minecraft/libraries/"+path+"/"+fileName);
+                try {
+                    downloadFile((version.getAsJsonObject().get("url")!=null?(version.getAsJsonObject().get("url").getAsString()):"https://libraries.minecraft.net/")+path+"/"+fileName,".minecraft/libraries/"+path+"/"+fileName);
+                    if(libs.equals("\"")){
+                        libs = libs + System.getProperty("user.dir").replace("\\","/")+"/.minecraft/libraries/"+path+"/"+fileName;
+                    }
+                    else{
+                        libs = libs + fg +System.getProperty("user.dir").replace("\\","/")+"/.minecraft/libraries/"+path+"/"+fileName;
+                    }
+                }
+                catch (Exception ex){
+                    if(jarFileStr!=null){
+                        try {
 
-                if(libs.equals("\"")){
-                    libs = libs + System.getProperty("user.dir").replace("\\","/")+"/.minecraft/libraries/"+path+"/"+fileName;
+                            System.out.println("downloaded a forge file.");
+
+                            File file = new File(".minecraft/libraries/"+path+"/forge-"+name.split(":")[2]+"-universal.jar");
+                            JarFile jarFile = new JarFile(System.getProperty("user.dir").replace("\\","/")+"/CML/tmp/forge-installer.jar");
+                            InputStream in = jarFile.getInputStream(jarFile.getEntry("install_profile.json"));
+
+                            byte[] bytes = new byte[in.available()];
+                            in.read(bytes);
+
+                            JsonObject profile = JsonParser.parseString(new String(bytes)).getAsJsonObject();
+
+                            in.close();
+                            jarFile.close();
+
+                            String mcVersion = profile.has("install")?profile.getAsJsonObject("install").get("minecraft").getAsString():profile.get("minecraft").getAsString();
+                            String mc_ = mcVersion+"-";
+                            String _mc = "-"+mcVersion;
+                            String forgeVersion = name.split(":")[2].replace(mc_,"").replace(mc_,"");
+                            String branch = getVersion(mcVersion,forgeVersion);
+                            downloadFile("https://bmclapi2.bangbang93.com/forge/download?mcversion="+mcVersion+"&version="+forgeVersion+(!Objects.equals(branch, "") ?"&branch="+branch:"")+"&category=universal&format=jar",file.getPath());
+
+                            if(libs.equals("\"")){
+                                libs = libs + System.getProperty("user.dir").replace("\\","/")+"/.minecraft/libraries/"+path+"/"+"forge-"+name.split(":")[2]+"-universal.jar";
+                            }
+                            else{
+                                libs = libs + fg +System.getProperty("user.dir").replace("\\","/")+"/.minecraft/libraries/"+path+"/"+"forge-"+name.split(":")[2]+"-universal.jar";
+                            }
+
+                            System.out.println("downloaded a forge file.");
+                        }
+                        catch (IOException exi){
+                            exi.printStackTrace();
+                        }
+                        catch (NullPointerException exc){
+                            System.out.println("pass a forge file.");
+                        }
+                    }
+                    else{
+                        System.out.println("pass a library.");
+                    }
                 }
-                else{
-                    libs = libs + ";" +System.getProperty("user.dir").replace("\\","/")+"/.minecraft/libraries/"+path+"/"+fileName;
-                }
+            } catch (IOException e) {
+                throw new RuntimeException(e);
             }
+
             try {
                 JsonObject downloads = version.getAsJsonObject().getAsJsonObject("downloads");
                 if(version.getAsJsonObject().get("downloads").getAsJsonObject().getAsJsonObject("classifiers")!=null){
@@ -227,12 +286,28 @@ public class Utils {
                 }
             }
             catch (Exception e){
-                System.out.println("past a native.");
+                System.out.println("pass a native.");
             }
         }
         libs = libs + ";" + System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+json.get("id").getAsString()+"/"+json.get("id").getAsString()+ ".jar\"";
         //return onlyOneLWJGL(removeDuplicates(libs),System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+json.get("id").getAsString()+"/"+json.get("id").getAsString()+ ".jar");
         return removeDuplicates(libs);
+    }
+
+    public static String getVersion(String mcversion,String version){
+        JsonArray versions = JsonParser.parseString(GetHttps("https://bmclapi2.bangbang93.com/forge/minecraft/"+mcversion)).getAsJsonArray();
+        for(JsonElement TVersion:versions){
+            if(TVersion.getAsJsonObject().get("version").getAsString().equals(version) && TVersion.getAsJsonObject().has("branch") && TVersion.getAsJsonObject().get("branch")!=null){
+                return TVersion.getAsJsonObject().get("branch").getAsString();
+            }
+        }
+        return "";
+    }
+
+    private static void replaceFile(String originalFile, String newFile) {
+        File original = new File(originalFile);
+        File tmp = new File(newFile);
+        tmp.renameTo(original);
     }
 
     public static String getLibraryName(String pathz) throws IOException {
@@ -391,7 +466,7 @@ public class Utils {
         for (String part : parts) {
             set.add(part.trim());
         }
-        return String.join(";", set);
+        return System.getProperty("os.name").contains("Windows")?String.join(";", set).replace("/","\\"):String.join(";", set);
     }
 
     public static String getCommand(String[] args){
@@ -464,7 +539,7 @@ public class Utils {
             JsonArray forgeInfos = JsonParser.parseString(GetHttps("https://bmclapi2.bangbang93.com/forge/minecraft/"+version)).getAsJsonArray();
             JsonObject forgeInfo = forgeInfos.get(forgeInfos.size()-1).getAsJsonObject();
             String forgeVersion = forgeInfo.get("version").getAsString();
-            downloadFile("https://bmclapi2.bangbang93.com/forge/download?mcversion="+version+"&version="+forgeVersion+"&category=installer&format=jar","CML/tmp/forge-installer.jar");
+            downloadFile("https://bmclapi2.bangbang93.com/forge/download?mcversion="+version+"&version="+forgeVersion+(forgeInfo.get("branch")!=null?("&branch="+forgeInfo.get("branch").getAsString()):(""))+"&category=installer&format=jar","CML/tmp/forge-installer.jar");
             return forgeVersion;
         }
         catch (Exception e){

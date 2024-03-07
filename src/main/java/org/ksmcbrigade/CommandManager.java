@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.Scanner;
 import java.util.UUID;
+import java.util.jar.JarFile;
 
 import static org.ksmcbrigade.Utils.*;
 
@@ -34,7 +35,8 @@ public class CommandManager {
                 return CommandManager.class.getDeclaredMethod(command,String[].class).invoke(CommandManager.class,(Object)args).toString();
             }
             catch (Exception e){
-                return "\nCan't execute command: "+e.getCause().toString();
+                e.printStackTrace();
+                return "\nCan't execute command.";
             }
         }
     }
@@ -215,6 +217,29 @@ public class CommandManager {
             if(obj instanceof Boolean){
                 return "";
             }
+            JarFile jarFile = new JarFile(System.getProperty("user.dir").replace("\\","/")+"/CML/tmp/forge-installer.jar");
+
+            try {
+                InputStream in = jarFile.getInputStream(jarFile.getEntry("install_profile.json"));
+
+                byte[] bytes = new byte[in.available()];
+                in.read(bytes);
+                String context = new String(bytes);
+                JsonObject profile = JsonParser.parseString(context).getAsJsonObject();
+
+                in.close();
+                jarFile.close();
+
+                if(profile.get("versionInfo")!=null){
+                    //old forge version
+                    new File(".minecraft/versions/"+args[2]).mkdirs();
+                    Files.write(Paths.get(".minecraft/versions/"+args[2]+"/"+args[2]+".json"),profile.getAsJsonObject("versionInfo").toString().getBytes());
+                }
+            }
+            catch (IOException e){
+                e.printStackTrace();
+            }
+
             System.out.println("Building the forge.");
             ProcessBuilder pb;
             if(System.getProperty("os.name").contains("Windows")){
@@ -239,7 +264,7 @@ public class CommandManager {
             Files.write(Paths.get(".minecraft/versions/"+args[2]+"/"+args[2]+".json"),json.toString().getBytes());
             downloadFile(json.get("downloads").getAsJsonObject().get("client").getAsJsonObject().get("url").getAsString(),".minecraft/versions/"+args[2]+"/"+args[2]+".jar");
 
-            for (Iterator<JsonElement> it = json.get("libraries").getAsJsonArray().iterator(); it.hasNext(); ) {
+            /*for (Iterator<JsonElement> it = json.get("libraries").getAsJsonArray().iterator(); it.hasNext(); ) {
                 JsonElement version = it.next();
                 try {
                     if(version.getAsJsonObject().get("downloads").getAsJsonObject().has("artifact")){
@@ -265,7 +290,8 @@ public class CommandManager {
                 catch (Exception e){
                     System.out.println("past a native.");
                 }
-            }
+            }*/
+            getLibraries(json,args[2],System.getProperty("user.dir").replace("\\","/")+"/CML/tmp/forge-installer.jar");
 
             JsonObject assets = (JsonObject) JsonParser.parseString(GetHttps(json.getAsJsonObject("assetIndex").get("url").getAsString()));
             Files.write(Paths.get(".minecraft/assets/indexes/"+json.get("assets").getAsString()+".json"),assets.toString().getBytes());
@@ -368,8 +394,19 @@ public class CommandManager {
         }
         all_args.add(mainClass);
         JsonArray jvm_game = JsonParser.parseString(GetHttps("https://piston-meta.mojang.com/v1/packages/c24c2fd37c8ca2e1c18721e2c77caf4d24c87f92/1.13.json")).getAsJsonObject().getAsJsonObject("arguments").getAsJsonArray("game");
+        boolean forge2 = false;
         if(json.has("arguments")){
             jvm_game = json.getAsJsonObject("arguments").getAsJsonArray("game");
+        }
+        if(json.has("minecraftArguments")){
+            jvm_game = new JsonArray();
+            String MinecraftArgs = json.get("minecraftArguments").getAsString();
+            for(String name:MinecraftArgs.split(" ")){
+                jvm_game.add(name);
+                if(name.toLowerCase().contains("forge")){
+                    forge2=true;
+                }
+            }
         }
         for(JsonElement game:jvm_game){
             if(game.isJsonObject()){
@@ -384,6 +421,9 @@ public class CommandManager {
             }
             else{
                 all_args.add(game.getAsString());
+                if(game.getAsString().toLowerCase().contains("forge")){
+                    forge2=true;
+                }
             }
         }
         String ACCESS_TOKEN = "0";
@@ -461,15 +501,20 @@ public class CommandManager {
             libraries_path=libraries_path.replace("/","\\");
         }
 
-        String gameArgs = "CD ${game_directory}\n\""+args[3].replace("|"," ")+"\" -Xmx"+ getMaxMemory() +"m -XX:+UseG1GC -XX:-UseAdaptiveSizePolicy -XX:-OmitStackTraceInFastThrow -Dfml.ignoreInvalidMinecraftCertificates=True -Dfml.ignorePatchDiscrepancies=True -Dlog4j2.formatMsgNoLookups=true " + all_args.toString().replace("[","").replace("]","").replace(",","").replace("，",",").replace("${game_directory}","\""+System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"\"");
-        gameArgs = gameArgs.replace("${natives_directory}", "\""+System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"/natives\"");
+        System.out.println(forge+" : "+forge2);
+        if(forge || forge2){
+            DownloadForgeInstaller(json.get("inheritsFrom")!=null?json.get("inheritsFrom").getAsString():args[0]);
+        }
+
+        String gameArgs = "CD ${game_directory}\n\""+args[3].replace("|"," ")+"\" -Xmx"+ getMaxMemory() +"m -XX:+UseG1GC -XX:-UseAdaptiveSizePolicy -XX:-OmitStackTraceInFastThrow -Dfml.ignoreInvalidMinecraftCertificates=True -Dfml.ignorePatchDiscrepancies=True -Dlog4j2.formatMsgNoLookups=true " + all_args.toString().replace("[","").replace("]","").replace(",","").replace("，",",").replace("${game_directory}","\""+(System.getProperty("os.name").contains("Windows")?(System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"\"").replace("/","\\"):System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"\""));
+        gameArgs = gameArgs.replace("${natives_directory}", "\""+(System.getProperty("os.name").contains("Windows")?(System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"/natives\"").replace("/","\\"):System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"/natives\""));
         gameArgs = gameArgs.replace("${launcher_name}","CML");
         gameArgs = gameArgs.replace("${launcher_version}","1.0.0");
-        gameArgs = gameArgs.replace("${classpath}",getLibraries(json,args[0]));
+        gameArgs = gameArgs.replace("${classpath}",getLibraries(json,args[0],System.getProperty("user.dir").replace("\\","/")+"/CML/tmp/forge-installer.jar"));
         gameArgs = gameArgs.replace("${auth_player_name}",zn);
         gameArgs = gameArgs.replace("${version_name}",args[0]);
-        gameArgs = gameArgs.replace("${game_directory}","\""+System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"\"");
-        gameArgs = gameArgs.replace("${assets_root}","\""+System.getProperty("user.dir").replace("\\","/")+"/.minecraft/assets\"");
+        gameArgs = gameArgs.replace("${game_directory}","\""+(System.getProperty("os.name").contains("Windows")?(System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"\"").replace("/","\\"):System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"\""));
+        gameArgs = gameArgs.replace("${assets_root}","\""+(System.getProperty("os.name").contains("Windows")?(System.getProperty("user.dir").replace("\\","/")+"/.minecraft/assets\"").replace("/","\\"):System.getProperty("user.dir").replace("\\","/")+"/.minecraft/assets\""));
         gameArgs = gameArgs.replace("${assets_index_name}",json.getAsJsonObject("assetIndex").get("id").getAsString());
         gameArgs = gameArgs.replace("${user_type}",args[1]);
         gameArgs = gameArgs.replace("${version_type}","CML");
@@ -479,6 +524,7 @@ public class CommandManager {
         gameArgs = gameArgs.replace("${resolution_height}","480");
         gameArgs = gameArgs.replace("${classpath_separator}",";");
         gameArgs = gameArgs.replace("${library_directory}","\""+libraries_path+"\"");
+        gameArgs = gameArgs.replace("${user_properties}","{}");
         gameArgs = gameArgs.replace(" -XstartOnFirstThread","");
         gameArgs = gameArgs.replace(" --demo","");
         gameArgs = gameArgs.replace(" --quickPlaySingleplayer ${quickPlaySingleplayer} --quickPlayMultiplayer ${quickPlayMultiplayer} --quickPlayRealms ${quickPlayRealms}","");
@@ -497,12 +543,15 @@ public class CommandManager {
             DelDirFiles(System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"/natives","dylib");
         }
         long end_time = System.currentTimeMillis();
-        gameArgs = gameArgs + " --userProperties {}";
+        if(!gameArgs.contains("--userProperties")){
+            gameArgs = gameArgs + " --userProperties {}";
+        }
         System.out.println("The operation is completed before startup,which takes time: "+(end_time-start_time)/1000+" seconds");
         String zdir = System.getProperty("user.dir");
         if(System.getProperty("os.name").contains("Windows")){
             Files.write(Paths.get("CML/tmp/StartCommand.bat"),gameArgs.getBytes());
             runBatchFile("\""+zdir+"\\CML\\tmp\\StartCommand.bat\"");
+            //runBatchFile(gameArgs.split("\n")[1],(System.getProperty("os.name").contains("Windows")?(System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]+"\"").replace("/","\\"):System.getProperty("user.dir").replace("\\","/")+"/.minecraft/versions/"+args[0]));
         }
         else{
             Files.write(Paths.get("CML/tmp/StartCommand.sh"),gameArgs.getBytes());
